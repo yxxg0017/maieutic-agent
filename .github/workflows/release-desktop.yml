@@ -1,0 +1,69 @@
+name: release-desktop
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            sidecar: bash scripts/build_sidecar.sh
+          - os: windows-2022
+            sidecar: pwsh scripts/build_sidecar.ps1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.7"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: dtolnay/rust-toolchain@stable
+
+      # sidecar 必须在目标平台 runner 上构建，不假定交叉编译可用
+      - name: 构建 sidecar 并跑 smoke test
+        run: ${{ matrix.sidecar }}
+
+      - name: 安装前端依赖
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: 打包
+        working-directory: apps/desktop
+        env:
+          # macOS 签名与 notarization
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows 代码签名
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: npx tauri build
+
+      - name: 生成第三方许可证清单与校验和
+        shell: bash
+        run: |
+          mkdir -p dist-meta
+          (cd apps/desktop && npx license-checker-rseidelsohn --production --json > ../../dist-meta/licenses-npm.json) || true
+          if [ -f backend/.venv/bin/python ]; then PY=backend/.venv/bin/python; else PY=backend/.venv/Scripts/python.exe; fi
+          $PY -m pip list --format=json > dist-meta/licenses-python.json
+          find apps/desktop/src-tauri/target/release/bundle -type f \
+            \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.exe' -o -name '*.msi' \) \
+            -exec shasum -a 256 {} \; > dist-meta/SHA256SUMS.txt || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/**
+            dist-meta/**
+          if-no-files-found: error

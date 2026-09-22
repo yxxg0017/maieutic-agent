@@ -1,0 +1,42 @@
+[project]
+name = "kel"
+version = "0.1.0"
+description = "Knowledge elicitation agent sidecar (FastAPI + LangGraph)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "langgraph==1.2.12",
+    "langgraph-checkpoint-sqlite==3.1.1",
+    "fastapi==0.141.1",
+    "uvicorn==0.53.0",
+    "sse-starlette==3.4.11",
+    "python-multipart==0.0.32",
+    "pydantic==2.13.5",
+    "numpy==2.4.6",
+    "httpx==0.28.1",
+    "aiosqlite==0.22.1",
+    "pypdf==6.19.0",
+    "keyring==25.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-timeout==2.4.0",
+    "pyinstaller==6.22.3",
+]
+
+[project.scripts]
+kel-sidecar = "kel.main:main"
+
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kel"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+timeout = 90
+testpaths = ["tests"]

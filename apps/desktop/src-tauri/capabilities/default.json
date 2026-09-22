@@ -1,0 +1,31 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "最小权限：只允许启动随包 sidecar、选择文件与打开 https 外链。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/kel-sidecar",
+          "sidecar": true,
+          "args": [
+            "--port",
+            { "validator": "^\\d{1,5}$" },
+            "--data-dir",
+            { "validator": "^.+$" },
+            "--log-level",
+            { "validator": "^(critical|error|warning|info|debug|trace)$" },
+            "--parent-pid",
+            { "validator": "^\\d+$" }
+          ]
+        }
+      ]
+    },
+    "dialog:allow-open",
+    "opener:default"
+  ]
+}

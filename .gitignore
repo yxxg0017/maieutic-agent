@@ -1,0 +1,30 @@
+# 构建产物与缓存
+node_modules/
+dist/
+dist-meta/
+build/
+target/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# sidecar 二进制不提交
+apps/desktop/src-tauri/binaries/*
+!apps/desktop/src-tauri/binaries/.gitkeep
+apps/desktop/src-tauri/gen/
+
+# 本地数据、密钥与签名材料
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+.env
+.env.*
+*.p12
+*.pem
+*.cer
+*.mobileprovision
+exports/
+
+.DS_Store
