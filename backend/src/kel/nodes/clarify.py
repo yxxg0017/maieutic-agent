@@ -36,14 +36,32 @@ FIXED_OPTIONS = [
 ]
 
 
+def _option_label(raw: dict[str, Any]) -> str:
+    """选项文本兼容多种键名；占位符标签视为无效，由调用方丢弃。"""
+    for key in ("label", "text", "name", "title"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            label = value.strip()
+            if label != str(raw.get("id", "")).strip():
+                return label
+    return ""
+
+
 def _build_questions(out: ClarifyOut) -> list[Question]:
     questions: list[Question] = []
     for raw in out.questions:
-        options = [
-            QuestionOption(id=str(o["id"]), label=str(o.get("label", o["id"])))
-            for o in raw.options
-            if isinstance(o, dict) and "id" in o and str(o["id"]) not in {"other", "uncertain"}
-        ][:5]
+        options: list[QuestionOption] = []
+        for option in raw.options:
+            if not isinstance(option, dict) or "id" not in option:
+                continue
+            option_id = str(option["id"])
+            if option_id in {"other", "uncertain"}:
+                continue
+            label = _option_label(option)
+            if not label:
+                continue  # 没有可读标签的选项无法让用户做出有意义的选择
+            options.append(QuestionOption(id=option_id, label=label))
+        options = options[:5]
         if len(options) < 2:
             continue
         questions.append(

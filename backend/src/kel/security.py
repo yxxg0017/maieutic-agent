@@ -8,6 +8,18 @@ import secrets
 from fastapi import HTTPException, Request, status
 
 ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+# WKWebView 从 tauri://localhost 发起的明文 http 请求会被当作混合内容拦截，因此
+# 桌面壳使用 http scheme（http://tauri.localhost），这里必须放行该来源。
+ALLOWED_ORIGIN_HOSTS = (*ALLOWED_HOSTS, "tauri.localhost")
+
+# 桌面壳可能出现的来源：macOS/Linux 的自定义协议、Windows/Android 的 http scheme、
+# 以及开发模式下的 Vite 服务器。带 Authorization 头的请求会触发 CORS 预检，
+# 没有匹配的 Access-Control-Allow-Origin 时 webview 会直接拒绝请求。
+DESKTOP_ORIGIN_REGEX = (
+    r"^(tauri|asset)://localhost$"
+    r"|^https?://tauri\.localhost$"
+    r"|^https?://(127\.0\.0\.1|localhost)(:\d+)?$"
+)
 
 
 def new_session_token() -> str:
@@ -34,7 +46,7 @@ class TokenGuard:
         origin = request.headers.get("origin")
         if origin:
             hostname = origin.split("//", 1)[-1].split(":")[0]
-            if hostname not in ALLOWED_HOSTS and not origin.startswith("tauri://"):
+            if hostname not in ALLOWED_ORIGIN_HOSTS and not origin.startswith("tauri://"):
                 raise HTTPException(status_code=403, detail="origin_not_allowed")
 
     async def __call__(self, request: Request) -> None:

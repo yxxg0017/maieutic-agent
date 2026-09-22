@@ -46,9 +46,15 @@ class Settings:
 
 @dataclass
 class ModelProfile:
+    """默认指向 DeepSeek 的 OpenAI 兼容端点；用户可在设置中改成任何兼容服务。
+
+    `deepseek-chat` 支持 `response_format=json_object`，满足结构化输出契约；
+    `deepseek-reasoner` 不支持 JSON 模式，不能用于结构化节点。
+    """
+
     provider: str = "openai_compatible"
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
+    base_url: str = "https://api.deepseek.com/v1"
+    model: str = "deepseek-chat"
 
 
 def get_api_key(profile_id: str = "default") -> str | None:

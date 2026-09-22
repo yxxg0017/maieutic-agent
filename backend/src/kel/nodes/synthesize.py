@@ -90,7 +90,9 @@ async def synthesize(state: dict[str, Any], config: RunnableConfig) -> dict[str,
             status="model_proposal",
         )
         claims.append(claim)
-        ctx.store.upsert_domain("claims", ctx.session_id, claim.id, claim.model_dump())
+        ctx.store.upsert_domain(
+            "claims", ctx.session_id, claim.id, claim.model_dump(), ctx.run_id
+        )
         ctx.emit("claim.updated", claim.model_dump())
 
     message_id = new_id("msg")

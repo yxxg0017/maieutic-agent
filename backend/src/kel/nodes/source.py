@@ -14,6 +14,8 @@ from .common import enter, model_failure_reason, note_degradation
 
 
 def _kind_for(locator: str) -> str:
+    if locator.startswith(("arxiv:", "openalex:", "doi:")):
+        return "research_paper"
     if locator.startswith("attachment:"):
         return "course_example" if locator.endswith(".md") else "paper_passage"
     if locator.startswith("http"):

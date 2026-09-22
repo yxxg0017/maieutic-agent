@@ -7,7 +7,13 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any
 
-from .adapters import ChatModelAdapter, LocalChunkRetrieval, RetrievalAdapter
+from .adapters import (
+    ChatModelAdapter,
+    CompositeRetrieval,
+    LocalChunkRetrieval,
+    PaperRetrieval,
+    RetrievalAdapter,
+)
 from .events import Event, EventFactory
 from .runtime import RunContext
 from .state import initial_state
@@ -53,10 +59,12 @@ class RunManager:
         store: Store,
         graph: Any,
         model_factory: Any,
+        online_retrieval: bool = False,
     ) -> None:
         self.store = store
         self.graph = graph
         self._model_factory = model_factory
+        self.online_retrieval = online_retrieval
         self._sessions: dict[str, SessionRuntime] = {}
 
     # ------------------------------------------------------------ 基础设施
@@ -69,8 +77,18 @@ class RunManager:
         return bool(runtime and runtime.task and not runtime.task.done())
 
     def _retrieval(self, session_id: str) -> RetrievalAdapter | None:
+        """本地附件始终可用；论文检索需显式开启（检索词会离开本机）。"""
+        backends: list[RetrievalAdapter] = []
         chunks = self.store.list_chunks(session_id)
-        return LocalChunkRetrieval(chunks) if chunks else None
+        if chunks:
+            backends.append(LocalChunkRetrieval(chunks))
+        if self.online_retrieval:
+            backends.append(PaperRetrieval())
+        if not backends:
+            return None
+        if len(backends) == 1:
+            return backends[0]
+        return CompositeRetrieval(backends)
 
     def _make_ctx(self, session_id: str, run_id: str) -> RunContext:
         runtime = self.runtime(session_id)

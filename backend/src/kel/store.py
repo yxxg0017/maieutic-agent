@@ -151,7 +151,22 @@ SCHEMA: list[tuple[int, str]] = [
         CREATE INDEX idx_chunks_attachment ON attachment_chunks(attachment_id, ordinal);
         """,
     ),
+    (
+        2,
+        """
+        -- 候选/边界/Claim 必须能按轮次（run）分组，否则多轮对话会把历次结果混在
+        -- 一起展示，破坏"同一次对比"的语义。
+        ALTER TABLE challenges ADD COLUMN run_id TEXT;
+        ALTER TABLE claims ADD COLUMN run_id TEXT;
+        CREATE INDEX idx_candidates_run ON candidates(session_id, run_id);
+        CREATE INDEX idx_challenges_run ON challenges(session_id, run_id);
+        CREATE INDEX idx_claims_run ON claims(session_id, run_id);
+        """,
+    ),
 ]
+
+RUN_SCOPED_TABLES = ("candidates", "challenges", "claims")
+DOMAIN_TABLES = (*RUN_SCOPED_TABLES, "evidence_items", "questions")
 
 
 def _now() -> str:
@@ -384,16 +399,15 @@ class Store:
         self, table: str, session_id: str, obj_id: str, data: dict[str, Any],
         run_id: str | None = None,
     ) -> None:
-        if table not in {
-            "evidence_items", "candidates", "claims", "challenges", "questions",
-        }:
+        if table not in DOMAIN_TABLES:
             raise ValueError(f"unsupported table: {table}")
         payload = json.dumps(data, ensure_ascii=False)
-        columns = "(id, session_id, data, created_at)"
-        values: tuple[Any, ...] = (obj_id, session_id, payload, _now())
-        if table == "candidates":
+        if table in RUN_SCOPED_TABLES:
             columns = "(id, session_id, run_id, data, created_at)"
-            values = (obj_id, session_id, run_id, payload, _now())
+            values: tuple[Any, ...] = (obj_id, session_id, run_id, payload, _now())
+        else:
+            columns = "(id, session_id, data, created_at)"
+            values = (obj_id, session_id, payload, _now())
         with self._lock, self._conn:
             self._conn.execute(
                 f"INSERT INTO {table} {columns} VALUES ({','.join('?' * len(values))})"
@@ -402,14 +416,40 @@ class Store:
             )
 
     def list_domain(self, table: str, session_id: str) -> list[dict[str, Any]]:
-        if table not in {
-            "evidence_items", "candidates", "claims", "challenges", "questions",
-        }:
+        if table not in DOMAIN_TABLES:
             raise ValueError(f"unsupported table: {table}")
         with self._lock:
             rows = self._conn.execute(
                 f"SELECT data FROM {table} WHERE session_id = ? ORDER BY rowid",
                 (session_id,),
+            ).fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def list_domain_by_run(self, table: str, session_id: str, run_id: str) -> list[dict[str, Any]]:
+        """按轮次查询。只对 run_scoped 表有意义。"""
+        if table not in RUN_SCOPED_TABLES:
+            raise ValueError(f"not run-scoped: {table}")
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT data FROM {table} WHERE session_id = ? AND run_id = ? ORDER BY rowid",
+                (session_id, run_id),
+            ).fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def latest_run_domain(self, table: str, session_id: str) -> list[dict[str, Any]]:
+        """取最近一个有记录的 run 的领域对象——CLI/UI 默认展示的维度。"""
+        if table not in RUN_SCOPED_TABLES:
+            return self.list_domain(table, session_id)
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT run_id FROM {table} WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if not row or not row["run_id"]:
+                return self.list_domain(table, session_id)
+            rows = self._conn.execute(
+                f"SELECT data FROM {table} WHERE session_id = ? AND run_id = ? ORDER BY rowid",
+                (session_id, row["run_id"]),
             ).fetchall()
         return [json.loads(r["data"]) for r in rows]
 
@@ -510,3 +550,26 @@ class Store:
                 (session_id,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------ 模型配置
+
+    def get_model_profile(self, profile_id: str = "default") -> dict[str, Any] | None:
+        """读取模型服务配置。密钥不在这里，只存钥匙串。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT provider, base_url, model FROM model_profiles WHERE profile_id = ?",
+                (profile_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_model_profile(
+        self, provider: str, base_url: str, model: str, profile_id: str = "default"
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO model_profiles(profile_id, provider, base_url, model,"
+                " is_default, created_at) VALUES (?, ?, ?, ?, 1, ?)"
+                " ON CONFLICT(profile_id) DO UPDATE SET provider = excluded.provider,"
+                " base_url = excluded.base_url, model = excluded.model",
+                (profile_id, provider, base_url, model, _now()),
+            )

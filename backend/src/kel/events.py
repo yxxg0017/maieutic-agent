@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import secrets
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -33,6 +34,10 @@ EventType = Literal[
 ]
 
 _counter = itertools.count(1)
+# 每个进程一个随机前缀。new_id 生成的 ID 会被持久化（会话、候选、Claim 等），
+# 而计数器每次进程启动都从 1 开始——没有前缀时，多次运行 CLI 会重复生成
+# sess_000001 / cand_000001，撞主键（会话）或静默覆盖上一轮数据（upsert 表）。
+_nonce = secrets.token_hex(3)
 
 
 def _now() -> str:
@@ -84,5 +89,5 @@ class EventFactory:
 
 
 def new_id(prefix: str) -> str:
-    """稳定顺序 ID。仅用于进程内临时对象；持久对象使用 store 分配的 ID。"""
-    return f"{prefix}_{next(_counter):06d}"
+    """进程内有序、跨进程唯一的 ID。前缀区分进程，计数器保证同进程内顺序。"""
+    return f"{prefix}_{_nonce}{next(_counter):04d}"

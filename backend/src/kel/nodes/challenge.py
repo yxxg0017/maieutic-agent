@@ -68,7 +68,9 @@ async def challenge(state: dict[str, Any], config: RunnableConfig) -> dict[str, 
         )
         ctx.emit("candidate.updated", candidate.model_dump())
 
-        if item.boundary_probe and budget.challenges_used < budget.max_challenges:
+        if item.boundary_probe:
+            # 探针来自同一次批判调用，不额外花费模型请求；每个候选都应有自己的边界，
+            # 因此不按 max_challenges 截断（该预算用于控制交互轮次，不是存储上限）。
             probe = Challenge(
                 id=new_id("ch"),
                 candidate_id=candidate.id,
@@ -79,7 +81,7 @@ async def challenge(state: dict[str, Any], config: RunnableConfig) -> dict[str, 
             challenges.append(probe)
             budget.challenges_used += 1
             ctx.store.upsert_domain(
-                "challenges", ctx.session_id, probe.id, probe.model_dump()
+                "challenges", ctx.session_id, probe.id, probe.model_dump(), ctx.run_id
             )
             ctx.emit("challenge.created", probe.model_dump())
 

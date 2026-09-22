@@ -251,10 +251,12 @@ class LocalChunkRetrieval:
         for chunk in self._chunks:
             text = chunk["text"].lower()
             score = sum(text.count(term) for term in terms)
-            if not terms:
-                score = 1  # 无可用检索词时返回最早的切片，不静默返回空
             if score:
                 scored.append((score, chunk))
+        if not scored:
+            # 跨语言提问（中文问题 + 英文论文）时词面匹配为零。用户既然导入了资料，
+            # 就不能返回空让流程退化成"无来源"，而是给出最近导入资料的开头片段。
+            scored = [(0, chunk) for chunk in self._recent_chunks(query.limit)]
         scored.sort(key=lambda item: (-item[0], item[1]["locator"]))
         return [
             RetrievedSource(
@@ -265,3 +267,80 @@ class LocalChunkRetrieval:
             )
             for _, chunk in scored[: query.limit]
         ]
+
+    def _recent_chunks(self, limit: int) -> list[dict[str, Any]]:
+        """最近导入附件的前若干片段。chunks 按导入顺序排列，取末尾的附件。"""
+        if not self._chunks:
+            return []
+        last_attachment = self._chunks[-1]["attachment_id"]
+        same = [c for c in self._chunks if c["attachment_id"] == last_attachment]
+        return same[: max(1, limit)]
+
+
+class PaperRetrieval:
+    """论文检索。会把检索词发往 arXiv / OpenAlex，因此必须由用户显式启用。
+
+    摘要来自论文自身，算 `primary`；但"拿到摘要"不等于"读过全文"，
+    需要全文时由用户执行下载命令，下载后才作为附件切片进入检索。
+    """
+
+    def __init__(self, enabled: bool = True, limit: int = 6) -> None:
+        self.enabled = enabled
+        self.limit = limit
+        self.last_error: str | None = None
+
+    async def search(self, query: SearchQuery) -> list[RetrievedSource]:
+        if not self.enabled:
+            return []
+        import asyncio
+
+        from .papers import PaperError, search as search_papers
+
+        try:
+            refs = await asyncio.to_thread(
+                search_papers, query.text, min(query.limit, self.limit)
+            )
+        except PaperError as exc:
+            self.last_error = str(exc)
+            return []
+        return [
+            RetrievedSource(
+                title=ref.title,
+                locator=ref.locator,
+                snippet=(ref.summary or ref.one_line())[:600],
+                tier="primary",
+                version=ref.published[:10] or None,
+            )
+            for ref in refs
+        ]
+
+
+class CompositeRetrieval:
+    """本地资料优先并保留固定席位，再补外部来源；单个后端失败不影响其他后端。
+
+    不保留席位时，外部检索的摘要会把用户刚导入的资料挤出来源列表。
+    """
+
+    def __init__(self, backends: list[RetrievalAdapter], local_share: float = 0.6) -> None:
+        self._backends = backends
+        self._local_share = local_share
+
+    async def search(self, query: SearchQuery) -> list[RetrievedSource]:
+        budget = max(query.limit, 1)
+        reserved = max(1, int(budget * self._local_share))
+        results: list[RetrievedSource] = []
+        seen: set[str] = set()
+        for index, backend in enumerate(self._backends):
+            quota = reserved if index == 0 else budget - len(results)
+            if quota <= 0:
+                break
+            try:
+                found = await backend.search(SearchQuery(text=query.text, limit=quota))
+            except Exception:
+                continue  # 降级由调用方通过来源为空来感知
+            for item in found[:quota]:
+                if item.locator in seen:
+                    continue
+                seen.add(item.locator)
+                results.append(item)
+        return results[:budget]

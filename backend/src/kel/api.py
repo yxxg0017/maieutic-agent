@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -20,13 +21,33 @@ from .events import new_id
 from .graph import build_graph
 from .ingest import IngestError, store_attachment
 from .runs import RunManager
-from .security import TokenGuard
+from .security import DESKTOP_ORIGIN_REGEX, TokenGuard
 from .store import Store
+
+# 进入 LangGraph checkpoint 的领域模型；新增 state 字段类型时必须同步。
+CHECKPOINTED_MODELS = (
+    "Budget",
+    "Candidate",
+    "Challenge",
+    "Claim",
+    "EntropyRecord",
+    "EvidenceItem",
+    "Hypothesis",
+    "HypothesisSet",
+    "InterruptPayload",
+    "LearningCheck",
+    "Message",
+    "Question",
+    "QuestionOption",
+    "ValueCriterion",
+    "EvidenceLink",
+    "Boundary",
+    "SourceSpan",
+)
 
 
 class SessionCreate(BaseModel):
     title: str = ""
-
 
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1)
@@ -72,16 +93,23 @@ def create_app(
     model_factory: Any | None = None,
 ) -> FastAPI:
     store = store or Store(settings.db_path)
-    profile = ModelProfile()
+    saved_profile = store.get_model_profile()
+    profile = ModelProfile(**saved_profile) if saved_profile else ModelProfile()
     state: dict[str, Any] = {}
     factory = model_factory or make_model_factory(settings, profile)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
         settings.data_dir.mkdir(parents=True, exist_ok=True)
+        # 显式登记 state 中出现的领域模型，避免 checkpoint 反序列化依赖隐式回退。
+        serde = JsonPlusSerializer(
+            allowed_msgpack_modules=[("kel.models", name) for name in CHECKPOINTED_MODELS]
+        )
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
+            saver.serde = serde
             graph = build_graph(saver)
             state["graph"] = graph
             state["runs"] = RunManager(store, graph, factory)
@@ -89,6 +117,15 @@ def create_app(
         store.close()
 
     app = FastAPI(title="kel-sidecar", lifespan=lifespan, docs_url=None, redoc_url=None)
+    # 预检必须在认证之前由中间件处理，否则带 Authorization 头的请求会被 webview 拦下。
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=DESKTOP_ORIGIN_REGEX,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "Last-Event-ID"],
+        max_age=600,
+    )
     guard = TokenGuard(settings.session_token)
     auth = [Depends(guard)]
 
@@ -129,15 +166,19 @@ def create_app(
         return store.list_sessions()
 
     @app.get("/v1/sessions/{session_id}", dependencies=auth)
-    async def get_session(session_id: str) -> dict[str, Any]:
+    async def get_session(session_id: str, scope: str = "latest_run") -> dict[str, Any]:
+        """默认只返回最近一轮的候选/边界/Claim，避免多轮结果混在一起。"""
         session = require_session(session_id)
+        pick = store.list_domain if scope == "all" else store.latest_run_domain
         return {
             **session,
+            "scope": scope,
             "messages": store.list_messages(session_id),
             "sources": store.list_domain("evidence_items", session_id),
-            "candidates": store.list_domain("candidates", session_id),
-            "claims": store.list_domain("claims", session_id),
-            "challenges": store.list_domain("challenges", session_id),
+            "candidates": pick("candidates", session_id),
+            "claims": pick("claims", session_id),
+            "challenges": pick("challenges", session_id),
+            "total_candidates": len(store.list_domain("candidates", session_id)),
             "attachments": [
                 {k: v for k, v in a.items() if k != "stored_path"}
                 for a in store.list_attachments(session_id)
@@ -249,9 +290,11 @@ def create_app(
         return store.list_domain("evidence_items", session_id)
 
     @app.get("/v1/sessions/{session_id}/candidates", dependencies=auth)
-    async def candidates(session_id: str) -> list[dict[str, Any]]:
+    async def candidates(session_id: str, scope: str = "latest_run") -> list[dict[str, Any]]:
         require_session(session_id)
-        return store.list_domain("candidates", session_id)
+        if scope == "all":
+            return store.list_domain("candidates", session_id)
+        return store.latest_run_domain("candidates", session_id)
 
     @app.post(
         "/v1/sessions/{session_id}/candidates/{candidate_id}/decision", dependencies=auth
@@ -336,9 +379,11 @@ def create_app(
     async def put_api_key(body: ApiKeyBody) -> dict[str, bool]:
         set_api_key(body.api_key)
         if body.base_url:
-            profile.base_url = body.base_url
+            profile.base_url = body.base_url.rstrip("/")
         if body.model:
             profile.model = body.model
+        # 配置随会话数据库持久化，重启后不回落到默认供应商。
+        store.save_model_profile(profile.provider, profile.base_url, profile.model)
         return {"model_configured": True}
 
     @app.exception_handler(IngestError)

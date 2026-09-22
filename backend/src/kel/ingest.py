@@ -39,7 +39,12 @@ def _chunk(text: str) -> list[str]:
 
 
 def parse_pdf(path: Path) -> list[tuple[str, str]]:
+    import logging
+
     from pypdf import PdfReader
+
+    # pypdf 对缺字体等情况会输出大量 WARNING，会淹没终端输出；解析本身不受影响。
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
 
     reader = PdfReader(str(path))
     if len(reader.pages) > MAX_PDF_PAGES:
